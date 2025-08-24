@@ -1,9 +1,11 @@
-from fastapi import FastAPI, UploadFile           #Webframework we use to expose our API
+from fastapi import FastAPI, UploadFile, Request     # Webframework we use to expose our API
 from fastapi.middleware.cors import CORSMiddleware   # allow RN APP running on different port to call our API
-from faster_whisper import WhisperModel           # Whisper model for transcription
-import tempfile                  # For creating temporary files before passing to Whisper
-import shutil            # For copying uploaded audio files to temp location
-import os                # For environment variables and file operations like WHISPER_MODEL
+from faster_whisper import WhisperModel              # Whisper model for transcription
+import tempfile                                      # For creating temporary files before passing to Whisper
+import shutil                                        # For copying uploaded audio files to temp location
+import os                                            # For environment variables and file operations like WHISPER_MODEL
+import ollama                                        # Python API for Ollama
+from pydantic import BaseModel
 
 app = FastAPI()         # Create FastAPI app instance
 
@@ -65,3 +67,30 @@ async def transcribe_audio(file: UploadFile):
 
     text = " ".join([s.text for s in segments])     # Join all segments into a single transcription string
     return {"transcription": text}
+
+
+class AnalyzeRequest(BaseModel):
+    text: str
+
+@app.post("/analyze_text")
+async def analyze_text(request: AnalyzeRequest):
+    """Analyze text using local Ollama model (phi3:mini)."""
+    prompt = f"""
+    Here is a Text: {request.text}
+
+    1. Check if there is any interesting event or information.
+    2. If yes, summarize it in one short sentence using ONLY the facts provided.
+    3. Do NOT invent or assume details that are not explicitly in the text.
+    4. If nothing interesting is found, reply exactly with "Nothing interesting".
+
+    Return ONLY the summary sentence or "Nothing interesting".
+    """
+
+    try:
+        response = ollama.chat(
+            model="phi3:mini",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return {"interesting_part": response["message"]["content"]}
+    except Exception as e:
+        return {"error": f"Ollama failed: {e}"}

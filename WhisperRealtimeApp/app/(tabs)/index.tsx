@@ -3,7 +3,7 @@
 // It uses Expo's Audio API for recording and Axios for sending audio chunks to a backend server
 
 import React, { useState, useRef } from "react";
-import { View, Button, Text, ScrollView, StyleSheet } from "react-native";
+import { View, Button, Text, ScrollView, StyleSheet, ActivityIndicator } from "react-native";
 import { Audio } from "expo-av";
 import axios from "axios";
 
@@ -14,6 +14,8 @@ interface TranscribeResponse {
 export default function App() {
   const [transcription, setTranscription] = useState<string>("");    // Holds the transcribed text
   const [recording, setRecording] = useState<boolean>(false);  
+  const [analysis, setAnalysis] = useState<string>("");          // Recording state
+  const [analyzing, setAnalyzing] = useState<boolean>(false);    // Analysis state
 
   const recordingFlagRef = useRef<boolean>(false);
   const recordingRef = useRef<Audio.Recording | null>(null);  // holds the current recording instance
@@ -22,7 +24,7 @@ export default function App() {
   const uploadQueueRef = useRef<string[]>([]);    // Queue of recorded audio chunks to be uploaded
   const workerRunningRef = useRef<boolean>(false);   // Flag to prevent multiple upload workers running simultaneously
 
-  // 4 seconds is a nice balance (fewer requests, still responsive)
+  // Duration of each audio chunk in milliseconds
   const CHUNK_DURATION = 6000;
 
   // Recording options for different platforms
@@ -100,6 +102,14 @@ export default function App() {
     }
   };
 
+  // Wait until all uploads are done and worker finished
+  const waitForQueueToDrain = async (maxWaitMs = 15000) => {
+    const start = Date.now();
+    while ((uploadQueueRef.current.length > 0 || workerRunningRef.current) && Date.now() - start < maxWaitMs) {
+      await sleep(150);
+    }
+  };
+
   const startRecording = async () => {
     try {
       const permission = await Audio.requestPermissionsAsync();  // Request microphone permission
@@ -112,6 +122,7 @@ export default function App() {
       });
 
       setTranscription("");
+      setAnalysis("");
       await startNewRecording();
 
       setRecording(true);
@@ -157,6 +168,30 @@ export default function App() {
     }
   };
 
+const analyzetext = async () => {
+  try{
+    const response = await fetch('http://192.168.18.12:8000/analyze_text', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ text: transcription }),
+
+  })
+  const data = await response.json()
+  setAnalysis(data?.interesting_part || "No result.");
+  console.log('LLM Interesting Part:', data);
+  }
+  catch(error){
+    console.log("Error Analyzing the text:", error);
+    setAnalysis("Analysis failed.");
+  }
+
+  finally{
+    setAnalyzing(false);
+  }
+}
+
   const stopRecording = async () => {
     setRecording(false);
     recordingFlagRef.current = false;
@@ -171,53 +206,43 @@ export default function App() {
           processQueue();
         }
       }
+
+      await waitForQueueToDrain();  // Wait until all uploads are done
+
+      if (transcription.trim().length > 0) {
+        analyzetext();
+      }
     } catch (e) {
       console.log("Error stopping recording:", e);
     }
   };
+  
 
   const styles = StyleSheet.create({
-    container: {
-      flex: 1,
-      padding: 20,
-      backgroundColor: "#fff",
-    },
-    buttonRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      marginBottom: 20,
-    },
-    transcriptionBox: {
-      flex: 1,
-      backgroundColor: "#f2f2f2",
-      borderRadius: 8,
-      padding: 12,
-    },
-    transcriptionText: {
-      fontSize: 16,
-      color: "#333",
-    },
+    container: { flex: 1, padding: 20, backgroundColor: "#fff" },
+    buttonRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 20 },
+    transcriptionBox: { flex: 1, backgroundColor: "#f2f2f2", borderRadius: 8, padding: 12, marginBottom: 12 },
+    transcriptionText: { fontSize: 16, color: "#333" },
+    analysisBox: { backgroundColor: "#eef7ff", borderRadius: 8, padding: 12, minHeight: 56 },
+    analysisTitle: { fontWeight: "600", marginBottom: 6 },
+    analysisText: { fontSize: 15 },
   });
 
   return (
     <View style={styles.container}>
       <View className="buttonRow" style={styles.buttonRow}>
-        <Button
-          title={recording ? "Recording..." : "Start Recording"}
-          onPress={startRecording}
-          disabled={recording}
-          color={recording ? "#aaa" : "#007AFF"}
-        />
-        <Button
-          title="Stop Recording"
-          onPress={stopRecording}
-          disabled={!recording}
-          color={!recording ? "#aaa" : "#FF3B30"}
-        />
+        <Button title={recording ? "Recording..." : "Start Recording"} onPress={startRecording} disabled={recording} color={recording ? "#aaa" : "#007AFF"} />
+        <Button title="Stop Recording" onPress={stopRecording} disabled={!recording} color={!recording ? "#aaa" : "#FF3B30"} />
       </View>
+
       <ScrollView style={styles.transcriptionBox}>
-        <Text style={styles.transcriptionText}>{transcription}</Text>
+        <Text style={styles.transcriptionText}>{transcription || "Transcription will appear here..."}</Text>
       </ScrollView>
+
+      <View style={styles.analysisBox}>
+        <Text style={styles.analysisTitle}>Interesting (LLM):</Text>
+        {analyzing ? <ActivityIndicator /> : <Text style={styles.analysisText}>{analysis || "—"}</Text>}
+      </View>
     </View>
   );
 }
